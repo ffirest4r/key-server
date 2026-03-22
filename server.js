@@ -71,13 +71,37 @@ const server = http.createServer(async (req, res) => {
 
   // ── POST /register ──────────────────────────────────────────
   // Called by destination.html when a key is generated
-  // Body: { key, expires_at, secret }
+  // Body: { key, expires_at, secret, token }
+  // token = the ?hash= value from work.ink redirect — verified here
   if (url === "/register" && req.method === "POST") {
     let body;
     try { body = await readBody(req); }
     catch { return send(res, 400, { error: "bad json" }); }
 
     if (body.secret !== SECRET) return send(res, 401, { error: "unauthorized" });
+
+    // ── Verify work.ink token ──────────────────────────────────
+    // If token is present, validate it against work.ink API (single-use)
+    // If no token, block the request — user didn't come from work.ink
+    const hash = body.token;
+    if (!hash || hash === "{TOKEN}" || hash.trim() === "") {
+      console.log("[register] blocked — no work.ink token");
+      return send(res, 403, { error: "no_token", message: "Complete the work.ink checkpoint first." });
+    }
+
+    try {
+      const checkRes = await fetch(`https://work.ink/_api/v2/token/isValid/${encodeURIComponent(hash)}?deleteToken=1`);
+      const checkData = await checkRes.json();
+      if (!checkData.valid) {
+        console.log(`[register] blocked — invalid/used token: ${hash}`);
+        return send(res, 403, { error: "invalid_token", message: "Invalid or already used work.ink token." });
+      }
+      console.log(`[register] work.ink token valid: ${hash}`);
+    } catch(e) {
+      console.error("[register] work.ink API error:", e.message);
+      // If work.ink API is unreachable, fail closed (deny)
+      return send(res, 503, { error: "verification_unavailable" });
+    }
 
     const expiresAt = new Date(body.expires_at).getTime();
     if (isNaN(expiresAt)) return send(res, 400, { error: "invalid expires_at" });
