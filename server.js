@@ -81,13 +81,16 @@ const server = http.createServer(async (req, res) => {
     if (body.secret !== SECRET) return send(res, 401, { error: "unauthorized" });
 
     // ── Verify work.ink token ──────────────────────────────────
-    // If token is present, validate it against work.ink API (single-use)
-    // If no token, block the request — user didn't come from work.ink
     const hash = body.token;
-    if (!hash || hash === "{TOKEN}" || hash.trim() === "") {
-      console.log("[register] blocked — no work.ink token");
-      return send(res, 403, { error: "no_token", message: "Complete the work.ink checkpoint first." });
-    }
+
+    // Admin bypass — skip work.ink check for lifetime key generation
+    if (hash === "admin_bypass") {
+      console.log("[register] admin bypass — skipping work.ink check");
+    } else {
+      if (!hash || hash === "{TOKEN}" || hash.trim() === "") {
+        console.log("[register] blocked — no work.ink token");
+        return send(res, 403, { error: "no_token", message: "Complete the work.ink checkpoint first." });
+      }
 
     try {
       const checkRes = await fetch(`https://work.ink/_api/v2/token/isValid/${encodeURIComponent(hash)}?deleteToken=1`);
@@ -99,9 +102,9 @@ const server = http.createServer(async (req, res) => {
       console.log(`[register] work.ink token valid: ${hash}`);
     } catch(e) {
       console.error("[register] work.ink API error:", e.message);
-      // If work.ink API is unreachable, fail closed (deny)
       return send(res, 503, { error: "verification_unavailable" });
     }
+    } // end else (admin_bypass check)
 
     const expiresAt = new Date(body.expires_at).getTime();
     if (isNaN(expiresAt)) return send(res, 400, { error: "invalid expires_at" });
@@ -135,8 +138,9 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { valid: false, reason: "not_found" });
     }
 
-    // Expired?
-    if (Date.now() > record.expires_at) {
+    // Expired? (lifetime keys have expires_at = year 9999, skip check)
+    const isLifetime = record.expires_at > 253370764800000; // year 9999 in ms
+    if (!isLifetime && Date.now() > record.expires_at) {
       keys.delete(key);
       console.log(`[validate] expired key=${key}`);
       return send(res, 200, { valid: false, reason: "expired" });
